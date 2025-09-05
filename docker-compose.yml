@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  backend:
+    build: .
+    container_name: rag-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/code/data
+      - ./app:/code/app # For development - remove in production
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/code
+    networks:
+      - rag-network
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import requests; requests.get('http://localhost:8000/api/v1/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    image: python:3.11-slim
+    container_name: rag-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    working_dir: /code
+    volumes:
+      - ./ui:/code
+      - ./data:/code/data # Optional: for debugging
+    ports:
+      - "8501:8501"
+    networks:
+      - rag-network
+    restart: unless-stopped
+    command: >
+      bash -c "
+        pip install --no-cache-dir streamlit requests pillow &&
+        streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  chroma_data:
+    driver: local

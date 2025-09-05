@@ -1,0 +1,30 @@
+# Core FastAPI and web framework
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+
+# LangChain and AI/ML libraries
+langchain
+langchain-openai
+langchain-community
+openai
+
+# Vector database
+chromadb
+
+# Document processing
+pypdf
+pymupdf
+docx2txt
+pytesseract
+Pillow
+pandas
+
+# Environment and configuration
+python-dotenv
+
+# Web UI
+streamlit
+requests
