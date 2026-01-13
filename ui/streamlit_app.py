@@ -40,8 +40,17 @@ st.set_page_config(
 )
 
 # API Configuration
-# API_BASE_URL = "http://localhost:8000/api/v1"  # Uncomment for local development
-API_BASE_URL = "http://backend:8000/api/v1"  # For Docker deployment
+import os
+
+# Auto-detect API URL based on environment
+# Priority: Environment Variable > Docker > Local
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8000") + "/api/v1" 
+    if os.getenv("RENDER_EXTERNAL_URL") 
+    else "http://backend:8000/api/v1" if os.getenv("DOCKER_ENV") 
+    else "http://localhost:8000/api/v1"
+)
 
 # Request timeout configuration
 REQUEST_TIMEOUT = 60  # seconds
