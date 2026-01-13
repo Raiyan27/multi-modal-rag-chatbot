@@ -8,21 +8,28 @@ import requests
 import json
 import time
 import sys
+import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+from dotenv import load_dotenv
 
+
+# Load environment variables from .env and .env.example
+load_dotenv()
+if not Path('.env').exists():
+    load_dotenv('.env.example')
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
-API_BASE_URL = "http://localhost:8000/api/v1"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 TEST_FILES = {
     "text": "sample_docs/sample.txt",
     "csv": "sample_docs/sample.csv"
 }
-TIMEOUT = 30  # seconds
+TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))  # seconds
 
 
 # =============================================================================

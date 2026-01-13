@@ -41,9 +41,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Constants
+# Constants - Load from settings
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.csv', '.png', '.jpg', '.jpeg', '.db'}
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 def validate_file_extension(filename: str) -> str:
@@ -86,14 +85,14 @@ def validate_file_size(file_size: int, filename: str) -> None:
     Raises:
         HTTPException: If file is too large
     """
-    if file_size > MAX_FILE_SIZE:
+    if file_size > settings.max_file_size_bytes:
         logger.warning(f"Rejected file upload - too large: {filename} ({file_size} bytes)")
         raise HTTPException(
             status_code=413,
             detail={
                 "error": "file_too_large",
-                "message": f"File size ({file_size / 1024 / 1024:.2f}MB) exceeds maximum allowed ({MAX_FILE_SIZE / 1024 / 1024}MB)",
-                "max_size_bytes": MAX_FILE_SIZE
+                "message": f"File size ({file_size / 1024 / 1024:.2f}MB) exceeds maximum allowed ({settings.max_file_size_bytes / 1024 / 1024}MB)",
+                "max_size_bytes": settings.max_file_size_bytes
             }
         )
 

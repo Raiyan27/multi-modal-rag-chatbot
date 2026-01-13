@@ -30,7 +30,7 @@ st.set_page_config(
         ## Multi-Modal RAG Assistant
         
         A powerful document Q&A system powered by:
-        - 🤖 OpenAI GPT-4 & GPT-4 Vision
+        - 🤖 OpenAI GPT-4o-mini & GPT-4o
         - 🔍 ChromaDB Vector Search
         - ⚡ LangChain Orchestration
         
@@ -41,6 +41,13 @@ st.set_page_config(
 
 # API Configuration
 import os
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment variables from .env and .env.example
+load_dotenv()
+if not Path('.env').exists():
+    load_dotenv('.env.example')
 
 # Auto-detect API URL based on environment
 # Priority: Environment Variable > Docker > Local
@@ -53,8 +60,8 @@ API_BASE_URL = os.getenv(
 )
 
 # Request timeout configuration
-REQUEST_TIMEOUT = 60  # seconds
-HEALTH_CHECK_TIMEOUT = 5  # seconds
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "60"))  # seconds
+HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_CHECK_TIMEOUT", "5"))  # seconds
 
 # =============================================================================
 # Custom CSS Styling

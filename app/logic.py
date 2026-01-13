@@ -59,7 +59,7 @@ def get_embeddings() -> OpenAIEmbeddings:
         logger.info("Initializing OpenAI embeddings instance")
         _embeddings_instance = OpenAIEmbeddings(
             openai_api_key=settings.openai_api_key,
-            model="text-embedding-3-small"
+            model=settings.openai_embedding_model
         )
     
     return _embeddings_instance
@@ -494,9 +494,9 @@ Instructions:
         ]
         
         response = client.chat.completions.create(
-            model="gpt-4o",  # Updated to gpt-4o which supports vision
+            model=settings.openai_vision_model,
             messages=messages,
-            max_tokens=1500,
+            max_tokens=settings.openai_max_tokens,
             temperature=temperature
         )
         
@@ -545,12 +545,12 @@ Question: {question}
 Please provide a comprehensive answer based on the context above."""
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=settings.openai_mini_model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        max_tokens=1500,
+        max_tokens=settings.openai_max_tokens,
         temperature=temperature
     )
     
