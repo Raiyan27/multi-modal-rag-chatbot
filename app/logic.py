@@ -16,7 +16,7 @@ from functools import lru_cache
 import pandas as pd
 import pytesseract
 from PIL import Image
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import (
     PyMuPDFLoader,
