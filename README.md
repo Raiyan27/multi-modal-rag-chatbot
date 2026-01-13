@@ -77,7 +77,7 @@ This application can process multiple document types, store vector embeddings, a
    │   └── streamlit_app.py     # Streamlit frontend
    ```
 
-   uncomment line 20 and comment out line 21.
+   uncomment line 43 and comment out line 44.
 
 2. **Set up environment variables**:
 
