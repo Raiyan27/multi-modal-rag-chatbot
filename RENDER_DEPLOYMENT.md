@@ -1,6 +1,6 @@
 # Deploying Multi-Modal RAG App to Render
 
-This guide will help you deploy the Multi-Modal RAG application to Render.com.
+This guide will help you deploy the Multi-Modal RAG application to Render.com using the **FREE tier**.
 
 ## Prerequisites
 
@@ -8,9 +8,140 @@ This guide will help you deploy the Multi-Modal RAG application to Render.com.
 2. Your code pushed to a Git repository (GitHub, GitLab, or Bitbucket)
 3. An OpenAI API key
 
-## Deployment Options
+---
 
-### Option 1: Blueprint Deployment (Recommended)
+## 🚀 Free Tier Deployment (Manual Service Creation)
+
+**Note**: Blueprint deployment requires a paid plan. Follow these steps for free tier deployment.
+
+### Step 1: Push Your Code to GitHub
+
+```bash
+git init
+git add .
+git commit -m "Initial commit for Render deployment"
+git push origin main
+```
+
+---
+
+### Step 2: Create Backend Service
+
+1. **Go to Render Dashboard**
+
+   - Visit https://dashboard.render.com/
+   - Click "New +" → "Web Service"
+
+2. **Connect Repository**
+
+   - Click "Connect account" if needed
+   - Select your repository
+   - Click "Connect"
+
+3. **Configure Backend Service**
+   Fill in these settings:
+
+   - **Name**: `multimodal-rag-backend` (or your preferred name)
+   - **Region**: Choose nearest to you
+   - **Branch**: `main` (or your default branch)
+   - **Root Directory**: Leave empty
+   - **Runtime**: `Python 3`
+   - **Build Command**:
+     ```bash
+     pip install -r requirements.txt
+     ```
+   - **Start Command**:
+     ```bash
+     uvicorn app.main:app --host 0.0.0.0 --port $PORT
+     ```
+   - **Instance Type**: `Free`
+
+4. **Add Environment Variables**
+
+   Scroll to "Environment Variables" section and click "Add Environment Variable":
+
+   | Key                      | Value                      |
+   | ------------------------ | -------------------------- |
+   | `OPENAI_API_KEY`         | `your-openai-api-key-here` |
+   | `PYTHONPATH`             | `/opt/render/project/src`  |
+   | `OPENAI_MODEL`           | `gpt-4o`                   |
+   | `OPENAI_VISION_MODEL`    | `gpt-4o`                   |
+   | `OPENAI_MINI_MODEL`      | `gpt-4o-mini`              |
+   | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small`   |
+
+5. **Advanced Settings** (Optional but Recommended)
+
+   - **Health Check Path**: `/api/v1/health`
+   - **Auto-Deploy**: Yes (recommended)
+
+6. **Create Web Service**
+   - Click "Create Web Service"
+   - Wait 3-5 minutes for deployment
+   - Note your backend URL (e.g., `https://multimodal-rag-backend.onrender.com`)
+
+---
+
+### Step 3: Create Frontend Service
+
+1. **Create Another Web Service**
+
+   - Go back to Dashboard
+   - Click "New +" → "Web Service"
+   - Connect the **same repository**
+
+2. **Configure Frontend Service**
+
+   - **Name**: `multimodal-rag-frontend`
+   - **Region**: Same as backend
+   - **Branch**: `main`
+   - **Root Directory**: Leave empty
+   - **Runtime**: `Python 3`
+   - **Build Command**:
+     ```bash
+     pip install streamlit requests Pillow
+     ```
+   - **Start Command**:
+     ```bash
+     streamlit run ui/streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false
+     ```
+   - **Instance Type**: `Free`
+
+3. **Add Environment Variable**
+
+   **IMPORTANT**: Replace `your-backend-url` with your actual backend URL from Step 2:
+
+   | Key            | Value                                          |
+   | -------------- | ---------------------------------------------- |
+   | `API_BASE_URL` | `https://your-backend-url.onrender.com/api/v1` |
+
+   Example: `https://multimodal-rag-backend.onrender.com/api/v1`
+
+4. **Create Web Service**
+   - Click "Create Web Service"
+   - Wait 2-3 minutes for deployment
+
+---
+
+### Step 4: Test Your Deployment
+
+1. **Access Frontend**
+
+   - Go to your frontend URL: `https://multimodal-rag-frontend.onrender.com`
+   - You should see the UI load
+
+2. **Check Backend Health**
+
+   - Visit: `https://your-backend-url.onrender.com/api/v1/health`
+   - Should return: `{"status":"healthy", ...}`
+
+3. **Test Upload**
+   - Upload a sample document through the UI
+   - Ask a question
+   - Verify you get a response
+
+---
+
+## Option 2: Blueprint Deployment (Paid Plans Only)
 
 This deploys both backend and frontend services automatically using `render.yaml`.
 

@@ -1,6 +1,64 @@
-# Quick Start Guide - Test Before Deploying
+# Quick Start Guide - Deploy to Render (Free Tier)
 
-## Local Testing (Before Render Deployment)
+## Prerequisites
+
+- GitHub account
+- Render account (free tier)
+- OpenAI API key
+
+---
+
+## 🚀 Deploy to Render (5 Minutes)
+
+### 1. Push to GitHub
+
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git push origin main
+```
+
+### 2. Deploy Backend
+
+- Go to https://dashboard.render.com/
+- Click "New +" → "Web Service"
+- Connect your repository
+- **Configure**:
+  - Name: `multimodal-rag-backend`
+  - Build: `pip install -r requirements.txt`
+  - Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+  - Instance: Free
+- **Environment Variables**:
+  - `OPENAI_API_KEY` = your key
+  - `PYTHONPATH` = `/opt/render/project/src`
+- Click "Create Web Service"
+- **Copy the URL** (e.g., `https://multimodal-rag-backend-xyz.onrender.com`)
+
+### 3. Deploy Frontend
+
+- Click "New +" → "Web Service"
+- Connect same repository
+- **Configure**:
+  - Name: `multimodal-rag-frontend`
+  - Build: `pip install streamlit requests Pillow`
+  - Start: `streamlit run ui/streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+  - Instance: Free
+- **Environment Variables**:
+  - `API_BASE_URL` = `https://YOUR-BACKEND-URL/api/v1`
+    (Replace with URL from step 2)
+- Click "Create Web Service"
+
+### 4. Access Your App
+
+- Frontend: Your frontend Render URL
+- Backend API: Your backend URL + `/docs`
+
+**Done! 🎉**
+
+---
+
+## 💻 Local Testing (Before Deploying)
 
 ### 1. Install Dependencies
 

@@ -33,7 +33,7 @@ An intelligent document Q&A system that processes multiple document types, store
 
 ### 🌐 Deploy to Render (Recommended for Production)
 
-The easiest way to get started is deploying to Render:
+Deploy to Render for free hosting:
 
 1. **Push to GitHub**:
 
@@ -44,19 +44,36 @@ The easiest way to get started is deploying to Render:
    git push origin main
    ```
 
-2. **Deploy via Blueprint**:
+2. **Create Backend Service**:
 
    - Go to [Render Dashboard](https://dashboard.render.com/)
-   - Click "New +" → "Blueprint"
+   - Click "New +" → "Web Service"
    - Connect your repository
-   - Render auto-detects `render.yaml` and deploys both services
-   - Add your `OPENAI_API_KEY` in the backend service environment variables
+   - Configure:
+     - **Name**: `multimodal-rag-backend`
+     - **Build Command**: `pip install -r requirements.txt`
+     - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+   - Add environment variable:
+     - `OPENAI_API_KEY` = `your-api-key`
+   - Deploy!
 
-3. **Access Your App**:
+3. **Create Frontend Service**:
+
+   - Click "New +" → "Web Service"
+   - Connect same repository
+   - Configure:
+     - **Name**: `multimodal-rag-frontend`
+     - **Build Command**: `pip install streamlit requests Pillow`
+     - **Start Command**: `streamlit run ui/streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+   - Add environment variable:
+     - `API_BASE_URL` = `https://your-backend-url.onrender.com/api/v1`
+   - Deploy!
+
+4. **Access Your App**:
    - Frontend: `https://your-frontend.onrender.com`
    - Backend API: `https://your-backend.onrender.com/docs`
 
-📖 **Detailed deployment guide**: See [RENDER_DEPLOYMENT.md](./RENDER_DEPLOYMENT.md)
+📖 **Detailed step-by-step guide**: See [RENDER_DEPLOYMENT.md](./RENDER_DEPLOYMENT.md)
 
 ---
 

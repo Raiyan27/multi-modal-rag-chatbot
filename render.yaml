@@ -1,4 +1,8 @@
 # Render Blueprint for Multi-Modal RAG Application
+#
+# ⚠️ NOTE: Blueprint deployment requires a PAID Render plan
+# For FREE tier users: Please follow the manual deployment steps in RENDER_DEPLOYMENT.md
+#
 # This file defines the infrastructure for deploying on Render
 
 services:
