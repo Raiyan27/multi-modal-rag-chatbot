@@ -530,14 +530,16 @@ def delete_document_embeddings(file_id: str) -> bool:
 def handle_text_query(
     question: str,
     context: str,
+    chat_history: List[Dict[str, str]] = None,
     temperature: float = 0.1
 ) -> str:
     """
-    Handle text-only query using GPT-4o-mini.
+    Handle text-only query using GPT-4o-mini with conversation memory.
     
     Args:
         question: User's question
         context: Retrieved document context
+        chat_history: Previous conversation messages for context
         temperature: Response generation temperature
         
     Returns:
@@ -555,8 +557,23 @@ Guidelines:
 3. Cite specific parts of the context when relevant
 4. Structure your response clearly with bullet points if appropriate
 5. Do not make up information or use external knowledge
-6. If asked for opinions or analysis, base them solely on the context"""
+6. If asked for opinions or analysis, base them solely on the context
+7. Consider the conversation history when answering follow-up questions
+8. If a question references something from the conversation (like "it", "that", "the previous point"), use the chat history to understand what is being referenced"""
 
+    # Build messages list with conversation history
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add chat history for context (limit to last 10 messages to avoid token limits)
+    if chat_history:
+        history_to_include = chat_history[-10:] if len(chat_history) > 10 else chat_history
+        for msg in history_to_include:
+            messages.append({
+                "role": msg.get("role", "user"),
+                "content": msg.get("content", "")
+            })
+    
+    # Add current question with context
     user_prompt = f"""Context from the document:
 {context}
 
@@ -564,12 +581,11 @@ Question: {question}
 
 Please provide a comprehensive answer based on the context above."""
 
+    messages.append({"role": "user", "content": user_prompt})
+
     response = client.chat.completions.create(
         model=settings.openai_mini_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
+        messages=messages,
         max_tokens=settings.openai_max_tokens,
         temperature=temperature
     )
@@ -577,15 +593,88 @@ Please provide a comprehensive answer based on the context above."""
     return response.choices[0].message.content
 
 
-def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
+def generate_suggested_questions(
+    question: str,
+    answer: str,
+    context: str,
+    chat_history: List[Dict[str, str]] = None
+) -> List[str]:
     """
-    Perform RAG query and return response.
+    Generate follow-up questions based on the conversation and context.
     
     Args:
-        query_request: Query request object with question and file_id
+        question: The user's question
+        answer: The generated answer
+        context: Document context
+        chat_history: Previous conversation messages
         
     Returns:
-        QueryResponse with answer, context, and sources
+        List of 3 suggested follow-up questions
+    """
+    logger.info("Generating suggested follow-up questions")
+    
+    client = get_openai_client()
+    
+    # Build conversation summary for context
+    conversation_summary = ""
+    if chat_history:
+        recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
+        conversation_summary = "\n".join([
+            f"{msg['role'].title()}: {msg['content'][:200]}..." 
+            if len(msg['content']) > 200 else f"{msg['role'].title()}: {msg['content']}"
+            for msg in recent_history
+        ])
+    
+    prompt = f"""Based on this document Q&A conversation, suggest 3 natural follow-up questions the user might want to ask next.
+
+Document Context (excerpt):
+{context[:1500]}...
+
+{"Previous Conversation:" + chr(10) + conversation_summary if conversation_summary else ""}
+
+Latest Question: {question}
+Latest Answer: {answer[:500]}...
+
+Generate exactly 3 follow-up questions that:
+1. Are specific and relevant to the document content
+2. Build naturally on the conversation
+3. Help the user explore related topics or go deeper into interesting points
+4. Are concise (under 100 characters each)
+
+Return ONLY the 3 questions, one per line, without numbering or bullet points."""
+
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_mini_model,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that generates relevant follow-up questions."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=200,
+            temperature=0.7
+        )
+        
+        # Parse response into list of questions
+        questions_text = response.choices[0].message.content.strip()
+        questions = [q.strip() for q in questions_text.split('\n') if q.strip()]
+        
+        # Return first 3 valid questions
+        return questions[:3]
+        
+    except Exception as e:
+        logger.warning(f"Failed to generate suggested questions: {e}")
+        return []
+
+
+def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
+    """
+    Perform RAG query and return response with conversation memory support.
+    
+    Args:
+        query_request: Query request object with question, file_id, and optional chat_history
+        
+    Returns:
+        QueryResponse with answer, context, sources, and suggested follow-up questions
         
     Raises:
         Exception: If query processing fails
@@ -600,6 +689,14 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
         max_sources = query_request.max_sources or 5
         temperature = query_request.temperature or 0.1
         
+        # Convert chat_history from Pydantic models to dicts if present
+        chat_history = None
+        if query_request.chat_history:
+            chat_history = [
+                {"role": msg.role, "content": msg.content}
+                for msg in query_request.chat_history
+            ]
+        
         # Perform similarity search with scores
         docs_with_scores = vectorstore.similarity_search_with_score(
             query_request.question,
@@ -613,6 +710,7 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
                 answer="No relevant documents found for this query. Please ensure you have uploaded and processed a document with this file ID.",
                 context="",
                 sources=[],
+                suggested_questions=[],
                 model_used="none",
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
@@ -636,21 +734,31 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
             )
             sources.append(source)
         
-        # Generate answer using text query (all documents are now text-based)
+        # Generate answer using text query with conversation history
         answer = handle_text_query(
             query_request.question,
             context,
+            chat_history,
             temperature
         )
         model_used = settings.openai_mini_model
         
+        # Generate suggested follow-up questions
+        suggested_questions = generate_suggested_questions(
+            query_request.question,
+            answer,
+            context,
+            chat_history
+        )
+        
         processing_time_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"RAG query complete: {len(sources)} sources, {processing_time_ms}ms")
+        logger.info(f"RAG query complete: {len(sources)} sources, {len(suggested_questions)} suggestions, {processing_time_ms}ms")
         
         return QueryResponse(
             answer=answer,
             context=context,
             sources=sources,
+            suggested_questions=suggested_questions,
             model_used=model_used,
             processing_time_ms=processing_time_ms
         )

@@ -29,6 +29,21 @@ class UploadResponse(BaseModel):
     }
 
 
+class ChatMessage(BaseModel):
+    """Model representing a chat message for conversation history."""
+    role: str = Field(..., description="Role of the message sender ('user' or 'assistant')")
+    content: str = Field(..., description="Content of the message")
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "role": "user",
+                "content": "What is the main topic of this document?"
+            }
+        }
+    }
+
+
 class QueryRequest(BaseModel):
     """Request model for query endpoint."""
     question: str = Field(
@@ -41,6 +56,10 @@ class QueryRequest(BaseModel):
         ..., 
         min_length=1,
         description="UUID of the uploaded file to query"
+    )
+    chat_history: Optional[List[ChatMessage]] = Field(
+        default=None,
+        description="Previous conversation messages for context (max 10 messages)"
     )
     max_sources: Optional[int] = Field(
         default=5,
@@ -111,6 +130,10 @@ class QueryResponse(BaseModel):
     answer: str = Field(..., description="AI-generated answer to the question")
     context: str = Field(..., description="Combined context used for generating the answer")
     sources: List[Source] = Field(default_factory=list, description="Source documents used")
+    suggested_questions: List[str] = Field(
+        default_factory=list, 
+        description="AI-generated follow-up questions based on the conversation"
+    )
     model_used: Optional[str] = Field(None, description="AI model used for generation")
     processing_time_ms: Optional[int] = Field(None, description="Processing time in milliseconds")
     
@@ -126,6 +149,11 @@ class QueryResponse(BaseModel):
                         "content": "This document contains various information about AI...",
                         "relevance_score": 0.95
                     }
+                ],
+                "suggested_questions": [
+                    "What are the key differences between machine learning and deep learning?",
+                    "How is NLP used in the document's context?",
+                    "What computer vision applications are mentioned?"
                 ],
                 "model_used": "gpt-4o-mini",
                 "processing_time_ms": 1250

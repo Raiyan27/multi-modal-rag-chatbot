@@ -612,6 +612,7 @@ def init_session_state():
         "show_sources": True,
         "show_context": False,
         "max_sources": 5,
+        "pending_question": None,  # For handling suggested question clicks
     }
     
     for key, default in defaults.items():
@@ -762,7 +763,7 @@ def upload_document(uploaded_file) -> bool:
 
 def query_document(question: str) -> Optional[Dict]:
     """
-    Query the document using the backend API.
+    Query the document using the backend API with conversation memory.
     
     Args:
         question: User's question
@@ -775,9 +776,20 @@ def query_document(question: str) -> Optional[Dict]:
         return None
     
     try:
+        # Build chat history from session state (last 10 messages for context)
+        chat_history = []
+        if st.session_state.chat_history:
+            # Take last 10 messages for conversation memory
+            recent_messages = st.session_state.chat_history[-10:]
+            chat_history = [
+                {"role": msg["role"], "content": msg["content"]}
+                for msg in recent_messages
+            ]
+        
         payload = {
             "question": question,
-            "file_id": st.session_state.file_id
+            "file_id": st.session_state.file_id,
+            "chat_history": chat_history if chat_history else None
         }
         
         result = make_api_request(
@@ -946,7 +958,7 @@ def render_sidebar():
             - `Ctrl+K` - Focus search
             """)
 
-def render_chat_message(role: str, content: str, timestamp: str = None, sources: List = None, context: str = None):
+def render_chat_message(role: str, content: str, timestamp: str = None, sources: List = None, context: str = None, suggested_questions: List[str] = None, is_last_message: bool = False):
     """
     Render a modern chat message bubble.
     
@@ -956,6 +968,8 @@ def render_chat_message(role: str, content: str, timestamp: str = None, sources:
         timestamp: Optional timestamp string
         sources: Optional list of source documents
         context: Optional context string used to generate the answer
+        suggested_questions: Optional list of follow-up question suggestions
+        is_last_message: Whether this is the last message (to show suggestions)
     """
     bubble_class = "user" if role == "user" else "assistant"
     
@@ -1009,9 +1023,38 @@ def render_chat_message(role: str, content: str, timestamp: str = None, sources:
                 label_visibility="collapsed",
                 key=f"context_{hash(content)}"
             )
+    
+    # Render suggested questions for the last assistant message
+    if role == "assistant" and is_last_message and suggested_questions:
+        st.markdown(
+            """
+            <div style="margin-top: 0.5rem; margin-bottom: 0.5rem;">
+                <span style="font-size: 0.85rem; color: var(--text-secondary);">💡 Follow-up questions:</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        cols = st.columns(len(suggested_questions))
+        for i, (col, question) in enumerate(zip(cols, suggested_questions)):
+            with col:
+                if st.button(
+                    question[:50] + "..." if len(question) > 50 else question,
+                    key=f"suggested_q_{i}_{hash(question)}",
+                    use_container_width=True,
+                    help=question
+                ):
+                    st.session_state.pending_question = question
+                    st.rerun()
 
 def render_chat_interface():
     """Render the main chat interface with fixed input at bottom."""
+    # Handle pending question from suggested questions click
+    if "pending_question" in st.session_state and st.session_state.pending_question:
+        pending_q = st.session_state.pending_question
+        st.session_state.pending_question = None
+        process_question(pending_q)
+        return
+    
     # Chat messages container (scrollable)
     if not st.session_state.chat_history:
         st.markdown(
@@ -1023,13 +1066,17 @@ def render_chat_interface():
             unsafe_allow_html=True
         )
     else:
-        for message in st.session_state.chat_history:
+        total_messages = len(st.session_state.chat_history)
+        for idx, message in enumerate(st.session_state.chat_history):
+            is_last = (idx == total_messages - 1)
             render_chat_message(
                 role=message["role"],
                 content=message["content"],
                 timestamp=message.get("timestamp"),
                 sources=message.get("sources") if message["role"] == "assistant" else None,
-                context=message.get("context") if message["role"] == "assistant" else None
+                context=message.get("context") if message["role"] == "assistant" else None,
+                suggested_questions=message.get("suggested_questions") if message["role"] == "assistant" else None,
+                is_last_message=is_last
             )
     
  
@@ -1082,13 +1129,14 @@ def process_question(question: str):
             st.write("✅ Found relevant context")
             st.write("🤖 Generating response...")
             
-            # Add assistant message to history
+            # Add assistant message to history with suggested questions
             assistant_message = {
                 "role": "assistant",
                 "content": result["answer"],
                 "timestamp": datetime.now().strftime("%H:%M"),
                 "sources": result.get("sources", []),
-                "context": result.get("context", "")
+                "context": result.get("context", ""),
+                "suggested_questions": result.get("suggested_questions", [])
             }
             st.session_state.chat_history.append(assistant_message)
             status.update(label="✅ Response ready!", state="complete", expanded=False)
