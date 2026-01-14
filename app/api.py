@@ -285,21 +285,27 @@ async def query_api(request: QueryRequest):
     """
     Query the RAG system with a text question.
     
-    This endpoint performs semantic search on the indexed document and generates
+    This endpoint performs semantic search on the indexed document(s) and generates
     an AI-powered response based on the relevant context.
     
-    **Query Processing:**
-    - Searches the document using semantic similarity
-    - Uses GPT-4o-mini for text-based response generation
-    - For image documents, OCR text is used; if no text was found, GPT Vision analyzed the image during upload
+    **Supports two modes:**
+    - **Single document**: Provide `file_id` to query one document
+    - **Multi-document**: Provide `file_ids` list to query across multiple documents
+    
+    **Search modes:**
+    - **Hybrid search** (default): Combines vector similarity + BM25 keyword matching
+    - **Vector only**: Set `use_hybrid_search=false` for semantic search only
     
     Args:
-        request: QueryRequest containing question and file_id
+        request: QueryRequest containing question and file_id(s)
         
     Returns:
         QueryResponse with answer, context, and source documents
     """
-    logger.info(f"Received query for file_id: {request.file_id}")
+    # Get file IDs using the helper method
+    file_ids = request.get_file_ids()
+    
+    logger.info(f"Received query for file_id: {request.file_id}, file_ids: {request.file_ids}, resolved: {file_ids}")
     
     # Validate question
     if not request.question or not request.question.strip():
@@ -312,34 +318,37 @@ async def query_api(request: QueryRequest):
             }
         )
     
-    # Validate file_id
-    if not request.file_id or not request.file_id.strip():
-        logger.warning("Received empty file_id")
+    # Validate that we have at least one file_id
+    if not file_ids:
+        logger.warning("Received empty file_id(s)")
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "empty_file_id",
-                "message": "File ID cannot be empty. Please upload a document first."
+                "message": "File ID(s) cannot be empty. Please upload or select document(s) first."
             }
         )
     
-    # Validate file_id format (should be UUID)
-    try:
-        uuid.UUID(request.file_id)
-    except ValueError:
-        logger.warning(f"Invalid file_id format: {request.file_id}")
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "invalid_file_id",
-                "message": "Invalid file ID format"
-            }
-        )
+    # Validate file_id format (should be UUID) for all file_ids
+    for fid in file_ids:
+        if not fid or not fid.strip():
+            continue
+        try:
+            uuid.UUID(fid)
+        except ValueError:
+            logger.warning(f"Invalid file_id format: {fid}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_file_id",
+                    "message": f"Invalid file ID format: {fid}"
+                }
+            )
     
     try:
         response = perform_rag_query(request)
         
-        logger.info(f"Query successful for file_id: {request.file_id}, sources found: {len(response.sources)}")
+        logger.info(f"Query successful for {len(file_ids)} file(s), sources found: {len(response.sources)}")
         
         return response
         

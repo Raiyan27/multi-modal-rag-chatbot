@@ -603,6 +603,8 @@ def init_session_state():
     defaults = {
         "file_id": None,
         "uploaded_filename": None,
+        "selected_file_ids": [],  # For multi-document selection
+        "selected_filenames": [],  # Corresponding filenames
         "chat_history": [],
         "api_healthy": None,
         "last_health_check": None,
@@ -613,6 +615,8 @@ def init_session_state():
         "show_context": False,
         "max_sources": 5,
         "pending_question": None,  # For handling suggested question clicks
+        "use_hybrid_search": True,  # Enable hybrid search by default
+        "multi_doc_mode": False,  # Multi-document mode toggle
     }
     
     for key, default in defaults.items():
@@ -764,6 +768,7 @@ def upload_document(uploaded_file) -> bool:
 def query_document(question: str) -> Optional[Dict]:
     """
     Query the document using the backend API with conversation memory.
+    Supports both single-document and multi-document modes with hybrid search.
     
     Args:
         question: User's question
@@ -771,8 +776,15 @@ def query_document(question: str) -> Optional[Dict]:
     Returns:
         Query response dictionary or None if failed
     """
-    if not st.session_state.file_id:
-        st.error("❌ No document uploaded. Please upload a document first.")
+    # Determine which file IDs to query
+    if st.session_state.multi_doc_mode and st.session_state.selected_file_ids:
+        file_ids = st.session_state.selected_file_ids
+        file_id = None
+    elif st.session_state.file_id:
+        file_ids = None
+        file_id = st.session_state.file_id
+    else:
+        st.error("❌ No document selected. Please upload or select a document first.")
         return None
     
     try:
@@ -788,9 +800,15 @@ def query_document(question: str) -> Optional[Dict]:
         
         payload = {
             "question": question,
-            "file_id": st.session_state.file_id,
-            "chat_history": chat_history if chat_history else None
+            "chat_history": chat_history if chat_history else None,
+            "use_hybrid_search": st.session_state.use_hybrid_search,
         }
+        
+        # Add file_id(s) based on mode
+        if file_ids:
+            payload["file_ids"] = file_ids
+        else:
+            payload["file_id"] = file_id
         
         result = make_api_request(
             "POST",
@@ -899,8 +917,66 @@ def render_sidebar():
         
         st.divider()
         
+        # Search Settings section
+        with st.expander("🔍 Search Settings", expanded=False):
+            st.session_state.use_hybrid_search = st.toggle(
+                "Hybrid Search",
+                value=st.session_state.use_hybrid_search,
+                help="Combine vector similarity with keyword matching (BM25) for better recall"
+            )
+            
+            st.session_state.multi_doc_mode = st.toggle(
+                "Multi-Document Mode",
+                value=st.session_state.multi_doc_mode,
+                help="Query across multiple documents at once"
+            )
+            
+            if st.session_state.use_hybrid_search:
+                st.caption("✅ Using Vector + BM25 with Reciprocal Rank Fusion")
+            else:
+                st.caption("Using vector similarity search only")
+        
+        # Multi-Document Selection
+        if st.session_state.multi_doc_mode:
+            with st.expander("📚 Select Documents to Query", expanded=True):
+                files = get_uploaded_files()
+                if files:
+                    st.caption("Select multiple documents to search across:")
+                    
+                    # Create checkboxes for each file
+                    selected_ids = []
+                    selected_names = []
+                    
+                    for file_info in files:
+                        file_id = file_info['file_id']
+                        filename = file_info['filename']
+                        is_selected = file_id in st.session_state.selected_file_ids
+                        
+                        if st.checkbox(
+                            f"📄 {filename[:30]}{'...' if len(filename) > 30 else ''}",
+                            value=is_selected,
+                            key=f"multi_select_{file_id}",
+                            help=f"ID: {file_id[:8]}..."
+                        ):
+                            selected_ids.append(file_id)
+                            selected_names.append(filename)
+                    
+                    # Update session state
+                    if selected_ids != st.session_state.selected_file_ids:
+                        st.session_state.selected_file_ids = selected_ids
+                        st.session_state.selected_filenames = selected_names
+                        if selected_ids:
+                            st.session_state.chat_history = []  # Clear chat when selection changes
+                    
+                    if selected_ids:
+                        st.success(f"📊 {len(selected_ids)} document(s) selected")
+                    else:
+                        st.warning("Select at least one document to query")
+                else:
+                    st.info("No files uploaded yet")
+        
         # Settings section
-        with st.expander("⚙️ Settings", expanded=False):
+        with st.expander("⚙️ Display Settings", expanded=False):
             st.session_state.show_sources = st.toggle(
                 "Show Sources",
                 value=st.session_state.show_sources,
@@ -921,22 +997,23 @@ def render_sidebar():
                 help="Maximum number of source documents to show"
             )
         
-        # Previously uploaded files
-        with st.expander("📚 All Uploaded Files", expanded=False):
-            files = get_uploaded_files()
-            if files:
-                for file_info in files:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.text(f"📄 {file_info['filename'][:20]}...")
-                    with col2:
-                        if st.button("Use", key=f"use_{file_info['file_id']}", help="Select this document"):
-                            st.session_state.file_id = file_info['file_id']
-                            st.session_state.uploaded_filename = file_info['filename']
-                            st.session_state.chat_history = []
-                            st.rerun()
-            else:
-                st.info("No files uploaded yet")
+        # Single document file browser (when not in multi-doc mode)
+        if not st.session_state.multi_doc_mode:
+            with st.expander("📚 All Uploaded Files", expanded=False):
+                files = get_uploaded_files()
+                if files:
+                    for file_info in files:
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.text(f"📄 {file_info['filename'][:20]}...")
+                        with col2:
+                            if st.button("Use", key=f"use_{file_info['file_id']}", help="Select this document"):
+                                st.session_state.file_id = file_info['file_id']
+                                st.session_state.uploaded_filename = file_info['filename']
+                                st.session_state.chat_history = []
+                                st.rerun()
+                else:
+                    st.info("No files uploaded yet")
         
         # Help section
         st.divider()
@@ -991,13 +1068,30 @@ def render_chat_message(role: str, content: str, timestamp: str = None, sources:
         with st.expander(f"📚 {len(sources)} Source(s)", expanded=False):
             for i, source in enumerate(sources[:st.session_state.max_sources], 1):
                 source_content = source.get('content', 'No preview available')
+                search_type = source.get('search_type', 'vector')
+                search_badge = {
+                    'hybrid': '🔀 Hybrid',
+                    'vector': '🎯 Vector',
+                    'bm25': '🔤 Keyword'
+                }.get(search_type, '🔍')
+                
+                # Build score display
+                score_parts = []
+                if source.get('relevance_score'):
+                    score_parts.append(f"<strong>Score:</strong> {source.get('relevance_score', 0):.1%}")
+                if source.get('vector_score'):
+                    score_parts.append(f"<strong>Vector:</strong> {source.get('vector_score', 0):.1%}")
+                if source.get('bm25_score'):
+                    score_parts.append(f"<strong>BM25:</strong> {source.get('bm25_score', 0):.1%}")
+                score_display = " | ".join(score_parts) if score_parts else ""
+                
                 st.markdown(
                     f"""
                     <div class="source-item">
-                        <div class="source-filename">📄 {source.get('filename', 'Unknown')}</div>
+                        <div class="source-filename">📄 {source.get('filename', 'Unknown')} <span style="font-size: 0.8em; opacity: 0.7;">{search_badge}</span></div>
                         {f'<div class="source-preview"><strong>Page:</strong> {source.get("page_number")}</div>' if source.get('page_number') else ''}
                         {f'<div class="source-preview"><strong>Chunk:</strong> {source.get("chunk_index")}</div>' if source.get('chunk_index') is not None else ''}
-                        {f'<div class="source-preview"><strong>Relevance:</strong> {source.get("relevance_score", 0):.1%}</div>' if source.get('relevance_score') else ''}
+                        {f'<div class="source-preview">{score_display}</div>' if score_display else ''}
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -1094,13 +1188,33 @@ def render_chat_interface():
             if st.button("📥 Export Chat", use_container_width=True, help="Export chat"):
                 export_chat_history()
     
+    # Determine if we have documents to query
+    has_documents = (
+        (st.session_state.multi_doc_mode and st.session_state.selected_file_ids) or
+        (not st.session_state.multi_doc_mode and st.session_state.file_id)
+    )
+    
+    # Show current search mode info
+    if has_documents and not st.session_state.chat_history:
+        if st.session_state.multi_doc_mode:
+            doc_count = len(st.session_state.selected_file_ids)
+            search_type = "Hybrid (Vector + BM25)" if st.session_state.use_hybrid_search else "Vector"
+            st.info(f"🔍 **{search_type} search** across **{doc_count} document(s)**")
+        elif st.session_state.use_hybrid_search:
+            st.info(f"🔍 **Hybrid search** enabled on: {st.session_state.uploaded_filename}")
+    
     # Use chat_input for better UX - handles Enter key and clears automatically
-    if st.session_state.file_id:
-        question = st.chat_input("Ask anything about your document...", key="chat_input")
+    if has_documents:
+        placeholder = (
+            f"Ask anything about your {len(st.session_state.selected_file_ids)} selected documents..."
+            if st.session_state.multi_doc_mode
+            else "Ask anything about your document..."
+        )
+        question = st.chat_input(placeholder, key="chat_input")
         if question:
             process_question(question)
     else:
-        st.chat_input("Please upload a document first...", disabled=True, key="chat_input_disabled")
+        st.chat_input("Please upload or select a document first...", disabled=True, key="chat_input_disabled")
 
 def process_question(question: str):
     """
@@ -1279,8 +1393,14 @@ def main():
     # render_header()
     render_sidebar()
     
+    # Determine if we have documents to chat with
+    has_documents = (
+        (st.session_state.multi_doc_mode and st.session_state.selected_file_ids) or
+        (not st.session_state.multi_doc_mode and st.session_state.file_id)
+    )
+    
     # Main content area
-    if st.session_state.file_id:
+    if has_documents:
         render_chat_interface()
         # Only show footer if no messages yet
         if not st.session_state.chat_history:

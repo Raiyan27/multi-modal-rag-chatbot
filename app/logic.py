@@ -2,10 +2,12 @@
 Business logic for the Multi-Modal RAG application.
 Handles document processing, embedding creation, and RAG pipeline.
 Enhanced with improved error handling, logging, caching, and performance optimizations.
+Now includes hybrid search (vector + BM25) and multi-document RAG support.
 """
 
 import os
 import io
+import re
 import sqlite3
 import base64
 import time
@@ -13,6 +15,7 @@ import logging
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 from functools import lru_cache
+from collections import defaultdict
 
 import pandas as pd
 import pytesseract
@@ -28,6 +31,9 @@ from langchain_community.document_loaders import (
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 from openai import OpenAI
+
+# BM25 for keyword search
+from rank_bm25 import BM25Okapi
 
 from .config import settings
 from .models import QueryRequest, QueryResponse, Source
@@ -45,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 _embeddings_instance: Optional[OpenAIEmbeddings] = None
 _openai_client: Optional[OpenAI] = None
+_bm25_index: Optional[Dict[str, Any]] = None  # Cache for BM25 index
 
 
 def get_embeddings() -> OpenAIEmbeddings:
@@ -93,6 +100,263 @@ def get_vectorstore() -> Chroma:
         persist_directory=settings.chroma_db_path,
         embedding_function=get_embeddings()
     )
+
+
+# =============================================================================
+# Hybrid Search (Vector + BM25)
+# =============================================================================
+
+def tokenize_text(text: str) -> List[str]:
+    """
+    Tokenize text for BM25 indexing.
+    
+    Args:
+        text: Text to tokenize
+        
+    Returns:
+        List of lowercase tokens
+    """
+    # Simple tokenization: lowercase, split on non-alphanumeric, filter short tokens
+    tokens = re.findall(r'\b\w+\b', text.lower())
+    return [t for t in tokens if len(t) > 2]  # Filter tokens shorter than 3 chars
+
+
+def build_bm25_index(documents: List[Tuple[Document, str]]) -> Tuple[BM25Okapi, List[Tuple[Document, str]]]:
+    """
+    Build BM25 index from documents.
+    
+    Args:
+        documents: List of (Document, doc_id) tuples
+        
+    Returns:
+        Tuple of (BM25 index, document list for lookup)
+    """
+    logger.info(f"Building BM25 index for {len(documents)} documents")
+    
+    # Tokenize all documents
+    tokenized_docs = [tokenize_text(doc.page_content) for doc, _ in documents]
+    
+    # Build BM25 index
+    bm25 = BM25Okapi(tokenized_docs)
+    
+    return bm25, documents
+
+
+def bm25_search(
+    query: str,
+    bm25_index: BM25Okapi,
+    documents: List[Tuple[Document, str]],
+    k: int = 10
+) -> List[Tuple[Document, str, float]]:
+    """
+    Perform BM25 keyword search.
+    
+    Args:
+        query: Search query
+        bm25_index: Pre-built BM25 index
+        documents: List of (Document, doc_id) tuples
+        k: Number of results to return
+        
+    Returns:
+        List of (Document, doc_id, score) tuples sorted by score descending
+    """
+    # Tokenize query
+    query_tokens = tokenize_text(query)
+    
+    if not query_tokens:
+        return []
+    
+    # Get BM25 scores
+    scores = bm25_index.get_scores(query_tokens)
+    
+    # Combine documents with scores and sort
+    doc_scores = [(doc, doc_id, score) for (doc, doc_id), score in zip(documents, scores)]
+    doc_scores.sort(key=lambda x: x[2], reverse=True)
+    
+    # Return top k
+    return doc_scores[:k]
+
+
+def reciprocal_rank_fusion(
+    vector_results: List[Tuple[Document, str, float]],
+    bm25_results: List[Tuple[Document, str, float]],
+    k: int = 60,
+    vector_weight: float = 0.5,
+    bm25_weight: float = 0.5
+) -> List[Tuple[Document, str, float, float, float]]:
+    """
+    Combine vector and BM25 results using Reciprocal Rank Fusion (RRF).
+    
+    RRF formula: score = sum(1 / (k + rank)) for each result list
+    
+    Args:
+        vector_results: Results from vector search (doc, doc_id, score)
+        bm25_results: Results from BM25 search (doc, doc_id, score)
+        k: RRF constant (default 60, standard in literature)
+        vector_weight: Weight for vector search scores
+        bm25_weight: Weight for BM25 search scores
+        
+    Returns:
+        List of (Document, doc_id, combined_score, vector_score, bm25_score) tuples
+    """
+    # Create document lookup by content hash (to handle duplicates)
+    doc_scores = {}
+    
+    # Process vector results
+    for rank, (doc, doc_id, score) in enumerate(vector_results, 1):
+        # Use content + file_id as key to identify unique chunks
+        key = f"{doc_id}:{hash(doc.page_content)}"
+        if key not in doc_scores:
+            doc_scores[key] = {
+                'doc': doc,
+                'doc_id': doc_id,
+                'vector_rrf': 0,
+                'bm25_rrf': 0,
+                'vector_score': 0,
+                'bm25_score': 0
+            }
+        doc_scores[key]['vector_rrf'] = vector_weight / (k + rank)
+        doc_scores[key]['vector_score'] = score
+    
+    # Process BM25 results
+    for rank, (doc, doc_id, score) in enumerate(bm25_results, 1):
+        key = f"{doc_id}:{hash(doc.page_content)}"
+        if key not in doc_scores:
+            doc_scores[key] = {
+                'doc': doc,
+                'doc_id': doc_id,
+                'vector_rrf': 0,
+                'bm25_rrf': 0,
+                'vector_score': 0,
+                'bm25_score': 0
+            }
+        doc_scores[key]['bm25_rrf'] = bm25_weight / (k + rank)
+        # Normalize BM25 score to 0-1 range
+        max_bm25 = max((s for _, _, s in bm25_results), default=1) or 1
+        doc_scores[key]['bm25_score'] = score / max_bm25
+    
+    # Combine scores and sort
+    results = []
+    for key, data in doc_scores.items():
+        combined_score = data['vector_rrf'] + data['bm25_rrf']
+        results.append((
+            data['doc'],
+            data['doc_id'],
+            combined_score,
+            data['vector_score'],
+            data['bm25_score']
+        ))
+    
+    # Sort by combined score
+    results.sort(key=lambda x: x[2], reverse=True)
+    
+    return results
+
+
+def hybrid_search(
+    query: str,
+    file_ids: List[str],
+    k: int = 10,
+    use_hybrid: bool = True
+) -> Tuple[List[Tuple[Document, float, float, float, str]], str]:
+    """
+    Perform hybrid search combining vector similarity and BM25 keyword search.
+    
+    Args:
+        query: Search query
+        file_ids: List of file IDs to search within
+        k: Number of results to return
+        use_hybrid: Whether to use hybrid search or vector-only
+        
+    Returns:
+        Tuple of (results list, search_method)
+        Results: List of (Document, combined_score, vector_score, bm25_score, search_type)
+    """
+    logger.info(f"Performing {'hybrid' if use_hybrid else 'vector'} search for {len(file_ids)} files")
+    
+    vectorstore = get_vectorstore()
+    collection = vectorstore._collection
+    
+    # Build filter for multiple file_ids
+    if len(file_ids) == 1:
+        filter_dict = {"file_id": file_ids[0]}
+    else:
+        filter_dict = {"file_id": {"$in": file_ids}}
+    
+    # Get all documents matching file_ids for BM25 indexing
+    all_docs_data = collection.get(
+        where=filter_dict,
+        include=["documents", "metadatas"]
+    )
+    
+    if not all_docs_data['ids']:
+        return [], "none"
+    
+    # Reconstruct Document objects
+    all_documents = []
+    for doc_id, content, metadata in zip(
+        all_docs_data['ids'],
+        all_docs_data['documents'],
+        all_docs_data['metadatas']
+    ):
+        doc = Document(page_content=content, metadata=metadata or {})
+        all_documents.append((doc, doc_id))
+    
+    # Vector search
+    vector_results_raw = vectorstore.similarity_search_with_score(
+        query,
+        k=k * 2,  # Get more for fusion
+        filter=filter_dict
+    )
+    
+    # Convert to standard format (doc, doc_id, score)
+    # Find doc_id by matching content
+    content_to_id = {doc.page_content: doc_id for doc, doc_id in all_documents}
+    vector_results = []
+    for doc, score in vector_results_raw:
+        doc_id = content_to_id.get(doc.page_content, "unknown")
+        # Convert distance to similarity
+        similarity = max(0, 1 - score) if score < 1 else 1 / (1 + score)
+        vector_results.append((doc, doc_id, similarity))
+    
+    if not use_hybrid:
+        # Vector-only search
+        results = [
+            (doc, score, score, 0.0, "vector")
+            for doc, doc_id, score in vector_results[:k]
+        ]
+        return results, "vector"
+    
+    # Build BM25 index and search
+    bm25_index, indexed_docs = build_bm25_index(all_documents)
+    bm25_results = bm25_search(query, bm25_index, indexed_docs, k=k * 2)
+    
+    # Fuse results using RRF
+    fused_results = reciprocal_rank_fusion(vector_results, bm25_results)
+    
+    # Format output
+    results = []
+    for doc, doc_id, combined, vector_score, bm25_score in fused_results[:k]:
+        # Determine search type based on which method found it
+        if vector_score > 0 and bm25_score > 0:
+            search_type = "hybrid"
+        elif vector_score > 0:
+            search_type = "vector"
+        else:
+            search_type = "bm25"
+        
+        # Normalize combined score to 0-1
+        results.append((doc, combined, vector_score, bm25_score, search_type))
+    
+    # Normalize combined scores
+    if results:
+        max_combined = max(r[1] for r in results) or 1
+        results = [
+            (doc, score / max_combined, vs, bs, st)
+            for doc, score, vs, bs, st in results
+        ]
+    
+    return results, "hybrid"
 
 
 # =============================================================================
@@ -668,10 +932,16 @@ Return ONLY the 3 questions, one per line, without numbering or bullet points.""
 
 def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
     """
-    Perform RAG query and return response with conversation memory support.
+    Perform RAG query with hybrid search and multi-document support.
+    
+    Features:
+    - Multi-document querying: Search across multiple documents simultaneously
+    - Hybrid search: Combines vector similarity with BM25 keyword matching
+    - Reciprocal Rank Fusion: Intelligently merges results from both search methods
+    - Conversation memory: Uses chat history for context-aware responses
     
     Args:
-        query_request: Query request object with question, file_id, and optional chat_history
+        query_request: Query request object with question, file_id(s), and options
         
     Returns:
         QueryResponse with answer, context, sources, and suggested follow-up questions
@@ -680,14 +950,28 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
         Exception: If query processing fails
     """
     start_time = time.time()
-    logger.info(f"Performing RAG query for file_id: {query_request.file_id}")
+    
+    # Get file IDs to query (supports both single and multi-document modes)
+    file_ids = query_request.get_file_ids()
+    
+    if not file_ids:
+        return QueryResponse(
+            answer="No document specified. Please provide a file_id or file_ids to query.",
+            context="",
+            sources=[],
+            suggested_questions=[],
+            search_method="none",
+            documents_searched=0,
+            model_used="none",
+            processing_time_ms=int((time.time() - start_time) * 1000)
+        )
+    
+    logger.info(f"Performing RAG query across {len(file_ids)} document(s)")
     
     try:
-        # Get vectorstore and search for relevant documents
-        vectorstore = get_vectorstore()
-        
         max_sources = query_request.max_sources or 5
         temperature = query_request.temperature or 0.1
+        use_hybrid = query_request.use_hybrid_search if query_request.use_hybrid_search is not None else True
         
         # Convert chat_history from Pydantic models to dicts if present
         chat_history = None
@@ -697,40 +981,44 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
                 for msg in query_request.chat_history
             ]
         
-        # Perform similarity search with scores
-        docs_with_scores = vectorstore.similarity_search_with_score(
+        # Perform hybrid search
+        search_results, search_method = hybrid_search(
             query_request.question,
+            file_ids,
             k=max_sources,
-            filter={"file_id": query_request.file_id}
+            use_hybrid=use_hybrid
         )
         
-        if not docs_with_scores:
-            logger.warning(f"No documents found for file_id: {query_request.file_id}")
+        if not search_results:
+            logger.warning(f"No documents found for file_ids: {file_ids}")
             return QueryResponse(
-                answer="No relevant documents found for this query. Please ensure you have uploaded and processed a document with this file ID.",
+                answer="No relevant documents found for this query. Please ensure you have uploaded and processed documents with the specified file IDs.",
                 context="",
                 sources=[],
                 suggested_questions=[],
+                search_method=search_method,
+                documents_searched=len(file_ids),
                 model_used="none",
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
         
         # Extract documents and build context
-        docs = [doc for doc, score in docs_with_scores]
+        docs = [doc for doc, _, _, _, _ in search_results]
         context = "\n\n---\n\n".join([doc.page_content for doc in docs])
         
-        # Build sources list with relevance scores
+        # Build sources list with detailed scoring info
         sources = []
-        for doc, score in docs_with_scores:
-            # ChromaDB returns distance, convert to similarity (lower distance = higher similarity)
-            relevance_score = max(0, 1 - score) if score < 1 else 1 / (1 + score)
-            
+        for doc, combined_score, vector_score, bm25_score, search_type in search_results:
             source = Source(
                 filename=doc.metadata.get("filename", "Unknown"),
+                file_id=doc.metadata.get("file_id"),
                 page_number=doc.metadata.get("page", None),
                 content=doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content,
-                relevance_score=round(relevance_score, 3),
-                chunk_index=doc.metadata.get("chunk_index", None)
+                relevance_score=round(combined_score, 3),
+                vector_score=round(vector_score, 3) if vector_score else None,
+                bm25_score=round(bm25_score, 3) if bm25_score else None,
+                chunk_index=doc.metadata.get("chunk_index", None),
+                search_type=search_type
             )
             sources.append(source)
         
@@ -752,13 +1040,18 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
         )
         
         processing_time_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"RAG query complete: {len(sources)} sources, {len(suggested_questions)} suggestions, {processing_time_ms}ms")
+        logger.info(
+            f"RAG query complete: {len(sources)} sources from {len(file_ids)} docs, "
+            f"search_method={search_method}, {processing_time_ms}ms"
+        )
         
         return QueryResponse(
             answer=answer,
             context=context,
             sources=sources,
             suggested_questions=suggested_questions,
+            search_method=search_method,
+            documents_searched=len(file_ids),
             model_used=model_used,
             processing_time_ms=processing_time_ms
         )

@@ -52,10 +52,13 @@ class QueryRequest(BaseModel):
         max_length=2000,
         description="The question to ask about the document"
     )
-    file_id: str = Field(
-        ..., 
-        min_length=1,
-        description="UUID of the uploaded file to query"
+    file_id: Optional[str] = Field(
+        default=None, 
+        description="UUID of the uploaded file to query (for single document mode)"
+    )
+    file_ids: Optional[List[str]] = Field(
+        default=None,
+        description="List of file UUIDs to query (for multi-document mode)"
     )
     chat_history: Optional[List[ChatMessage]] = Field(
         default=None,
@@ -73,6 +76,10 @@ class QueryRequest(BaseModel):
         le=2.0,
         description="Temperature for response generation (0=deterministic, 2=creative)"
     )
+    use_hybrid_search: Optional[bool] = Field(
+        default=True,
+        description="Use hybrid search (vector + BM25) for better recall"
+    )
     
     @field_validator('question')
     @classmethod
@@ -83,20 +90,21 @@ class QueryRequest(BaseModel):
             raise ValueError('Question cannot be empty or whitespace only')
         return stripped
     
-    @field_validator('file_id')
-    @classmethod
-    def validate_file_id(cls, v: str) -> str:
-        """Ensure file_id is not just whitespace."""
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError('File ID cannot be empty')
-        return stripped
+    def get_file_ids(self) -> List[str]:
+        """Get list of file IDs to query (handles both single and multi-document modes)."""
+        if self.file_ids:
+            return self.file_ids
+        elif self.file_id:
+            return [self.file_id]
+        return []
     
     model_config = {
         "json_schema_extra": {
             "example": {
                 "question": "What are the main topics discussed in this document?",
                 "file_id": "123e4567-e89b-12d3-a456-426614174000",
+                "file_ids": ["id1", "id2"],
+                "use_hybrid_search": True,
                 "max_sources": 5,
                 "temperature": 0.1
             }
@@ -107,19 +115,27 @@ class QueryRequest(BaseModel):
 class Source(BaseModel):
     """Model representing a source document chunk."""
     filename: str = Field(..., description="Name of the source file")
+    file_id: Optional[str] = Field(None, description="ID of the source file")
     page_number: Optional[int] = Field(None, description="Page number if applicable")
     content: str = Field(..., description="Preview of the source content")
-    relevance_score: Optional[float] = Field(None, description="Similarity score (0-1)")
+    relevance_score: Optional[float] = Field(None, description="Combined relevance score (0-1)")
+    vector_score: Optional[float] = Field(None, description="Vector similarity score")
+    bm25_score: Optional[float] = Field(None, description="BM25 keyword match score")
     chunk_index: Optional[int] = Field(None, description="Index of the chunk in the document")
+    search_type: Optional[str] = Field(None, description="How this result was found: 'vector', 'bm25', or 'hybrid'")
     
     model_config = {
         "json_schema_extra": {
             "example": {
                 "filename": "document.pdf",
+                "file_id": "123e4567-e89b-12d3-a456-426614174000",
                 "page_number": 5,
                 "content": "This section discusses the main findings...",
                 "relevance_score": 0.92,
-                "chunk_index": 12
+                "vector_score": 0.89,
+                "bm25_score": 0.95,
+                "chunk_index": 12,
+                "search_type": "hybrid"
             }
         }
     }
@@ -134,6 +150,8 @@ class QueryResponse(BaseModel):
         default_factory=list, 
         description="AI-generated follow-up questions based on the conversation"
     )
+    search_method: Optional[str] = Field(None, description="Search method used: 'vector', 'bm25', or 'hybrid'")
+    documents_searched: Optional[int] = Field(None, description="Number of documents searched")
     model_used: Optional[str] = Field(None, description="AI model used for generation")
     processing_time_ms: Optional[int] = Field(None, description="Processing time in milliseconds")
     

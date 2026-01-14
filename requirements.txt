@@ -22,6 +22,9 @@ pytesseract
 Pillow
 pandas
 
+# Hybrid search - BM25 keyword search
+rank-bm25
+
 # Environment and configuration
 python-dotenv
 
