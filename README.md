@@ -17,11 +17,13 @@
 
 **The Solution**: This application leverages cutting-edge Large Language Models (LLMs) and vector embeddings to create an intelligent document assistant that:
 
-- **Understands context** through semantic search (not just keywords)
+- **Understands context** through hybrid search (semantic + keyword matching)
+- **Queries multiple documents** simultaneously with intelligent result fusion
 - **Processes multiple formats** including text and images
-- **Provides sourced answers** with complete traceability
+- **Provides sourced answers** with complete traceability and search scores
+- **Maintains conversation memory** for contextual follow-up questions
+- **Suggests follow-up questions** using AI-powered query generation
 - **Scales efficiently** with production-grade architecture
-- **Adapts to user intent** using conversational AI
 
 **Real-World Impact**: Reduces document review time by 80%, enables instant knowledge retrieval across departments, and democratizes access to complex information repositories.
 
@@ -62,11 +64,20 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
 - **Images (PNG/JPG/JPEG)**: Smart text extraction with Tesseract OCR → GPT-4o Vision fallback
 - **SQLite Databases**: Direct query and analysis of database files
 
+### 🤖🔎 **Advanced Search & Retrieval**
+
+- **Hybrid Search**: Combines vector similarity search with BM25 keyword matching
+- **Reciprocal Rank Fusion (RRF)**: Intelligently merges results from both search methods
+- **Multi-Document Queries**: Search across multiple documents simultaneously with a single query
+- **Per-Source Scoring**: View vector similarity and BM25 scores for each retrieved chunk
+- **Configurable Search Mode**: Toggle between hybrid and vector-only search
+
 ### 💬 **Intelligent Query Interface**
 
 - **Natural Language Q&A**: Ask questions in plain English
-- **Conversation Memory**: Maintains chat history per document session
-- **Source Attribution**: Every answer includes referenced document sections
+- **Conversational Memory**: Maintains last 10 messages for context-aware responses
+- **AI Query Suggestions**: Get 3 AI-generated follow-up questions after each response
+- **Source Attribution**: Every answer includes referenced document sections with search metadata
 - **Context Display**: Optionally view the full retrieved context used for answers
 - **Chat Export**: Export conversation history to JSON
 
@@ -82,10 +93,16 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
 
 #### Advanced RAG Pipeline
 
-- **Semantic Search**: ChromaDB vector store with cosine similarity matching
+- **Hybrid Search Architecture**:
+  - **Vector Search**: ChromaDB with OpenAI embeddings for semantic similarity
+  - **BM25 Search**: Keyword-based ranking using `rank-bm25` library
+  - **Reciprocal Rank Fusion**: Combines both rankings with formula `score = 1/(k + rank)`, k=60
+- **Multi-Document Retrieval**: Query across multiple documents with `$in` filter aggregation
 - **Chunking Strategy**: Configurable chunk size (1000 tokens) with 200-token overlap for context preservation
 - **Embedding Model**: OpenAI `text-embedding-3-small` for cost-efficient, high-quality vectors
 - **LLM Orchestration**: gpt-4o for text and vision, gpt-4o-mini for lightweight tasks
+- **Conversational Context**: Last 10 chat messages included in LLM prompt for coherent conversations
+- **Query Suggestion Engine**: AI generates 3 contextual follow-up questions per response
 
 #### Production-Grade Architecture
 
@@ -146,7 +163,9 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
 │  │  LangChain Orchestration                               │    │
 │  │  - Document Loaders (PDF, DOCX, Image, CSV)            │    │
 │  │  - Text Splitters (Recursive Character Splitting)      │    │
-│  │  - Retrieval Chain (Similarity Search + LLM)           │    │
+│  │  - Hybrid Search (Vector + BM25 + RRF)                 │    │
+│  │  - Multi-Document Retrieval                            │    │
+│  │  - Conversational Memory (10-message context)          │    │
 │  └──────────────────┬─────────────────────────────────────┘    │
 └─────────────────────┼──────────────────────────────────────────┘
                       │
@@ -190,14 +209,21 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
 3. USER ASKS QUESTION
    └─> Streamlit UI → FastAPI /query endpoint
        └─> Embed question (same embedding model)
-           └─> ChromaDB similarity search (k=5)
-               └─> Retrieve top relevant chunks
-                   └─> Construct prompt:
-                       ├─> System instructions
-                       ├─> Retrieved context
-                       └─> User question
-                           └─> LLM generates answer
-                               └─> Return with sources & context
+           └─> Hybrid Search (if enabled):
+               ├─> Vector Search: ChromaDB similarity (k=5)
+               ├─> BM25 Search: Keyword ranking (k=5)
+               └─> Reciprocal Rank Fusion: Merge & re-rank
+           └─> Multi-Document Filter (if multiple docs selected):
+               └─> Apply {"file_id": {"$in": [...]}} filter
+           └─> Retrieve top relevant chunks with scores
+               └─> Construct prompt:
+                   ├─> System instructions
+                   ├─> Chat history (last 10 messages)
+                   ├─> Retrieved context
+                   └─> User question
+                       └─> LLM generates answer
+                           └─> Generate 3 follow-up suggestions
+                               └─> Return with sources, context & suggestions
 
 4. ANSWER DISPLAY
    └─> Streamlit renders:
@@ -208,13 +234,16 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
 
 ### Key Design Decisions
 
-| Decision                               | Rationale                                                                  |
-| -------------------------------------- | -------------------------------------------------------------------------- |
-| **ChromaDB over Pinecone/Weaviate**    | Self-hosted, zero-cost, perfect for moderate scale (<1M vectors)           |
-| **FastAPI over Flask**                 | Async support, automatic OpenAPI docs, Pydantic validation, modern Python  |
-| **Streamlit over React**               | Rapid prototyping, Python-native, built-in widgets, no frontend build step |
-| **1000-token chunks with 200 overlap** | Balances context window utilization with answer precision                  |
-| **Singleton OpenAI clients**           | Reduces connection overhead from 300ms to <10ms per request                |
+| Decision                               | Rationale                                                                     |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| **Hybrid Search (Vector + BM25)**      | Combines semantic understanding with exact keyword matching for better recall |
+| **Reciprocal Rank Fusion (k=60)**      | Proven algorithm for merging ranked lists without score normalization         |
+| **ChromaDB over Pinecone/Weaviate**    | Self-hosted, zero-cost, perfect for moderate scale (<1M vectors)              |
+| **FastAPI over Flask**                 | Async support, automatic OpenAPI docs, Pydantic validation, modern Python     |
+| **Streamlit over React**               | Rapid prototyping, Python-native, built-in widgets, no frontend build step    |
+| **1000-token chunks with 200 overlap** | Balances context window utilization with answer precision                     |
+| **Singleton OpenAI clients**           | Reduces connection overhead from 300ms to <10ms per request                   |
+| **10-message conversation window**     | Sufficient context for follow-ups without exceeding token limits              |
 
 ---
 
@@ -321,8 +350,8 @@ multi-modal-rag-app/
 │   ├── __init__.py
 │   ├── main.py                   # FastAPI entry point, CORS, middleware
 │   ├── api.py                    # Route handlers (/upload, /query, /files)
-│   ├── logic.py                  # Core RAG logic, LangChain orchestration
-│   ├── models.py                 # Pydantic request/response models
+│   ├── logic.py                  # Core RAG logic: hybrid search, RRF, multi-doc
+│   ├── models.py                 # Pydantic models (QueryRequest, Source, etc.)
 │   └── config.py                 # Settings management (pydantic-settings)
 │
 ├── ui/                           # Frontend application
@@ -348,18 +377,19 @@ multi-modal-rag-app/
 
 ## 🛠️ Technology Stack
 
-| Layer                   | Technologies                                        | Purpose                                    |
-| ----------------------- | --------------------------------------------------- | ------------------------------------------ |
-| **AI/ML**               | OpenAI gpt-4o-mini, gpt-4o-mini, gpt-4o-mini Vision | Language understanding, generation, vision |
-| **Embeddings**          | OpenAI text-embedding-3-small                       | Semantic vector representations            |
-| **Vector Store**        | ChromaDB                                            | Similarity search, persistent storage      |
-| **Orchestration**       | LangChain                                           | RAG pipeline, document loaders, chains     |
-| **Backend**             | FastAPI, Uvicorn                                    | Async REST API, ASGI server                |
-| **Frontend**            | Streamlit                                           | Interactive UI, data apps                  |
-| **Document Processing** | PyMuPDF, pypdf, docx2txt, pytesseract, pandas       | Multi-format parsing                       |
-| **Validation**          | Pydantic                                            | Type safety, request validation            |
-| **Containerization**    | Docker, Docker Compose                              | Isolated environments, orchestration       |
-| **Configuration**       | python-dotenv, pydantic-settings                    | Environment management                     |
+| Layer                   | Technologies                                  | Purpose                                    |
+| ----------------------- | --------------------------------------------- | ------------------------------------------ |
+| **AI/ML**               | OpenAI gpt-4o, gpt-4o-mini, gpt-4o Vision     | Language understanding, generation, vision |
+| **Embeddings**          | OpenAI text-embedding-3-small                 | Semantic vector representations            |
+| **Vector Store**        | ChromaDB                                      | Similarity search, persistent storage      |
+| **Keyword Search**      | rank-bm25 (BM25Okapi)                         | TF-IDF based keyword ranking               |
+| **Orchestration**       | LangChain                                     | RAG pipeline, document loaders, chains     |
+| **Backend**             | FastAPI, Uvicorn                              | Async REST API, ASGI server                |
+| **Frontend**            | Streamlit                                     | Interactive UI, data apps                  |
+| **Document Processing** | PyMuPDF, pypdf, docx2txt, pytesseract, pandas | Multi-format parsing                       |
+| **Validation**          | Pydantic                                      | Type safety, request validation            |
+| **Containerization**    | Docker, Docker Compose                        | Isolated environments, orchestration       |
+| **Configuration**       | python-dotenv, pydantic-settings              | Environment management                     |
 
 ---
 
@@ -367,14 +397,55 @@ multi-modal-rag-app/
 
 ### Endpoints
 
-| Method   | Endpoint                  | Description                 | Request Body                        | Response                                            |
-| -------- | ------------------------- | --------------------------- | ----------------------------------- | --------------------------------------------------- |
-| `GET`    | `/`                       | Root welcome message        | -                                   | JSON info                                           |
-| `GET`    | `/api/v1/health`          | System health check         | -                                   | Health status + vectorstore stats                   |
-| `POST`   | `/api/v1/upload`          | Upload and process document | `multipart/form-data` (file)        | `file_id`, `filename`, `message`                    |
-| `POST`   | `/api/v1/query`           | Ask question about document | `{"question": str, "file_id": str}` | `{"answer": str, "sources": [...], "context": str}` |
-| `GET`    | `/api/v1/files`           | List all uploaded files     | -                                   | Array of file objects                               |
-| `DELETE` | `/api/v1/files/{file_id}` | Delete uploaded file        | -                                   | Confirmation message                                |
+| Method   | Endpoint                  | Description                 | Request Body                   | Response                          |
+| -------- | ------------------------- | --------------------------- | ------------------------------ | --------------------------------- |
+| `GET`    | `/`                       | Root welcome message        | -                              | JSON info                         |
+| `GET`    | `/api/v1/health`          | System health check         | -                              | Health status + vectorstore stats |
+| `POST`   | `/api/v1/upload`          | Upload and process document | `multipart/form-data` (file)   | `file_id`, `filename`, `message`  |
+| `POST`   | `/api/v1/query`           | Ask question about document | See Query Request Schema below | See Query Response Schema below   |
+| `GET`    | `/api/v1/files`           | List all uploaded files     | -                              | Array of file objects             |
+| `DELETE` | `/api/v1/files/{file_id}` | Delete uploaded file        | -                              | Confirmation message              |
+
+### Query Request Schema
+
+```json
+{
+  "question": "string (required)",
+  "file_id": "string (optional - single document)",
+  "file_ids": ["string"],
+  "use_hybrid_search": "boolean (default: true)",
+  "chat_history": [
+    { "role": "user", "content": "previous question" },
+    { "role": "assistant", "content": "previous answer" }
+  ]
+}
+```
+
+### Query Response Schema
+
+```json
+{
+  "answer": "string",
+  "sources": [
+    {
+      "content": "chunk text",
+      "page": 1,
+      "file_id": "uuid",
+      "vector_score": 0.89,
+      "bm25_score": 12.5,
+      "search_type": "hybrid"
+    }
+  ],
+  "context": "full retrieved context",
+  "search_method": "hybrid",
+  "documents_searched": ["file1.pdf", "file2.docx"],
+  "suggested_questions": [
+    "Follow-up question 1?",
+    "Follow-up question 2?",
+    "Follow-up question 3?"
+  ]
+}
+```
 
 ### Example Usage
 
@@ -386,14 +457,31 @@ curl -X POST "http://localhost:8000/api/v1/upload" \
   -F "file=@document.pdf"
 ```
 
-**Query Document:**
+**Query Single Document:**
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/query" \
   -H "Content-Type: application/json" \
   -d '{
     "question": "What are the key findings?",
-    "file_id": "abc123"
+    "file_id": "abc123",
+    "use_hybrid_search": true
+  }'
+```
+
+**Query Multiple Documents:**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Compare the methodologies across all documents",
+    "file_ids": ["abc123", "def456", "ghi789"],
+    "use_hybrid_search": true,
+    "chat_history": [
+      {"role": "user", "content": "What topics are covered?"},
+      {"role": "assistant", "content": "The documents cover..."}
+    ]
   }'
 ```
 
