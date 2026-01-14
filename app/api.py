@@ -283,22 +283,18 @@ async def upload_file(file: UploadFile = File(..., description="Document file to
 )
 async def query_api(request: QueryRequest):
     """
-    Query the RAG system with text and optionally an image.
+    Query the RAG system with a text question.
     
     This endpoint performs semantic search on the indexed document and generates
     an AI-powered response based on the relevant context.
     
-    **Text-only queries:**
+    **Query Processing:**
     - Searches the document using semantic similarity
-    - Uses GPT-4o-mini for response generation
-    
-    **Multi-modal queries (with image):**
-    - Searches document for relevant context
-    - Uses GPT-4 Vision to analyze both text and image
-    - Provides answers that combine document knowledge with visual understanding
+    - Uses GPT-4o-mini for text-based response generation
+    - For image documents, OCR text is used; if no text was found, GPT Vision analyzed the image during upload
     
     Args:
-        request: QueryRequest containing question, file_id, and optional image
+        request: QueryRequest containing question and file_id
         
     Returns:
         QueryResponse with answer, context, and source documents

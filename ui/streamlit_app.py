@@ -3,8 +3,6 @@ Streamlit frontend for the Multi-Modal RAG application.
 Enhanced with improved UI/UX, error handling, chat history, and performance optimizations.
 """
 
-import base64
-import io
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -22,7 +20,7 @@ st.set_page_config(
     page_title="📄 Multi-Modal RAG Assistant",
     page_icon="🤖",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
     menu_items={
         'Get Help': 'https://github.com/your-repo/multi-modal-rag-app',
         'Report a bug': 'https://github.com/your-repo/multi-modal-rag-app/issues',
@@ -719,43 +717,6 @@ def check_api_health() -> Dict[str, Any]:
         st.session_state.last_health_check = time.time()
         return {"healthy": False, "total_documents": 0}
 
-def encode_image_to_base64(image_file) -> Optional[str]:
-    """
-    Convert uploaded image to base64 string with optimization.
-    
-    Args:
-        image_file: Uploaded file object
-        
-    Returns:
-        Base64 encoded string or None if failed
-    """
-    try:
-        image = Image.open(image_file)
-        
-        # Optimize image size for API (max 1024px on longest side)
-        max_size = 1024
-        if max(image.size) > max_size:
-            ratio = max_size / max(image.size)
-            new_size = tuple(int(dim * ratio) for dim in image.size)
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
-        
-        # Convert to RGB if necessary (for PNG with transparency)
-        if image.mode in ('RGBA', 'LA', 'P'):
-            background = Image.new('RGB', image.size, (255, 255, 255))
-            if image.mode == 'P':
-                image = image.convert('RGBA')
-            background.paste(image, mask=image.split()[-1] if image.mode == 'RGBA' else None)
-            image = background
-        
-        # Save to buffer with optimization
-        buffered = io.BytesIO()
-        image.save(buffered, format="JPEG", quality=85, optimize=True)
-        return base64.b64encode(buffered.getvalue()).decode()
-        
-    except Exception as e:
-        st.error(f"❌ Error encoding image: {str(e)}")
-        return None
-
 def upload_document(uploaded_file) -> bool:
     """
     Upload document to the backend API with progress tracking.
@@ -799,13 +760,12 @@ def upload_document(uploaded_file) -> bool:
         st.error(f"❌ Unexpected error: {str(e)}")
         return False
 
-def query_document(question: str, image_base64: Optional[str] = None) -> Optional[Dict]:
+def query_document(question: str) -> Optional[Dict]:
     """
     Query the document using the backend API.
     
     Args:
         question: User's question
-        image_base64: Optional base64 encoded image
         
     Returns:
         Query response dictionary or None if failed
@@ -817,8 +777,7 @@ def query_document(question: str, image_base64: Optional[str] = None) -> Optiona
     try:
         payload = {
             "question": question,
-            "file_id": st.session_state.file_id,
-            "image_base64": image_base64
+            "file_id": st.session_state.file_id
         }
         
         result = make_api_request(
@@ -897,7 +856,7 @@ def render_sidebar():
                         st.rerun()
             with col2:
                 if st.button("❌ Cancel", use_container_width=True):
-                    st.rerun()
+                    pass  # Just dismiss, no rerun needed
         
         st.divider()
         
@@ -987,7 +946,7 @@ def render_sidebar():
             - `Ctrl+K` - Focus search
             """)
 
-def render_chat_message(role: str, content: str, timestamp: str = None, sources: List = None):
+def render_chat_message(role: str, content: str, timestamp: str = None, sources: List = None, context: str = None):
     """
     Render a modern chat message bubble.
     
@@ -996,6 +955,7 @@ def render_chat_message(role: str, content: str, timestamp: str = None, sources:
         content: Message content
         timestamp: Optional timestamp string
         sources: Optional list of source documents
+        context: Optional context string used to generate the answer
     """
     bubble_class = "user" if role == "user" else "assistant"
     
@@ -1016,16 +976,39 @@ def render_chat_message(role: str, content: str, timestamp: str = None, sources:
     if role == "assistant" and sources and st.session_state.show_sources:
         with st.expander(f"📚 {len(sources)} Source(s)", expanded=False):
             for i, source in enumerate(sources[:st.session_state.max_sources], 1):
+                source_content = source.get('content', 'No preview available')
                 st.markdown(
                     f"""
                     <div class="source-item">
                         <div class="source-filename">📄 {source.get('filename', 'Unknown')}</div>
                         {f'<div class="source-preview"><strong>Page:</strong> {source.get("page_number")}</div>' if source.get('page_number') else ''}
-                        <div class="source-preview">{source.get('content', 'No preview available')[:150]}...</div>
+                        {f'<div class="source-preview"><strong>Chunk:</strong> {source.get("chunk_index")}</div>' if source.get('chunk_index') is not None else ''}
+                        {f'<div class="source-preview"><strong>Relevance:</strong> {source.get("relevance_score", 0):.1%}</div>' if source.get('relevance_score') else ''}
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
+                # Show full content in a text area for better readability
+                st.text_area(
+                    f"Content from source {i}",
+                    source_content,
+                    height=150,
+                    disabled=True,
+                    label_visibility="collapsed",
+                    key=f"source_content_{id(source)}_{i}"
+                )
+    
+    # Render context if available and enabled
+    if role == "assistant" and context and st.session_state.show_context:
+        with st.expander("📄 Retrieved Context", expanded=False):
+            st.text_area(
+                "Full context used for this answer",
+                context,
+                height=300,
+                disabled=True,
+                label_visibility="collapsed",
+                key=f"context_{hash(content)}"
+            )
 
 def render_chat_interface():
     """Render the main chat interface with fixed input at bottom."""
@@ -1034,7 +1017,7 @@ def render_chat_interface():
         st.markdown(
             """
             <div style="text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
-                <p style="font-size: 1.125rem;">No messages yet. Start a conversation! 💬</p>
+                <p style="font-size: 3rem;">No messages yet. Start a conversation! 💬</p>
             </div>
             """,
             unsafe_allow_html=True
@@ -1045,74 +1028,40 @@ def render_chat_interface():
                 role=message["role"],
                 content=message["content"],
                 timestamp=message.get("timestamp"),
-                sources=message.get("sources") if message["role"] == "assistant" else None
+                sources=message.get("sources") if message["role"] == "assistant" else None,
+                context=message.get("context") if message["role"] == "assistant" else None
             )
     
-    st.divider()
+ 
     
-    col1, col2 = st.columns([4, 1], gap="small")
-    
-    with col1:
-        question = st.text_area(
-            "Message",
-            placeholder="Ask anything about your document...",
-            height=80,
-            key="question_input",
-            label_visibility="collapsed",
-            max_chars=5000
-        )
-    
-    with col2:
-        uploaded_image = st.file_uploader(
-            "Add image",
-            type=["png", "jpg", "jpeg"],
-            help="Optional image for visual context",
-            key="image_input",
-            label_visibility="collapsed"
-        )
+    # Action buttons row - only show when there are messages
+    if st.session_state.chat_history:
+        col1, col2 = st.columns([1, 1], gap="small")
         
-        if uploaded_image:
-            # Show thumbnail
-            image = Image.open(uploaded_image)
-            st.image(image, caption="Attached", use_container_width=True, width=80)
+        with col1:
+            if st.button("🔄 Clear Chat", use_container_width=True, help="Clear chat history"):
+                st.session_state.chat_history = []
+                st.rerun()
+        
+        with col2:
+            if st.button("📥 Export Chat", use_container_width=True, help="Export chat"):
+                export_chat_history()
     
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Action buttons
-    st.markdown('<div style="display: flex; gap: 0.5rem; margin-top: 1rem;">', unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([2, 1, 1], gap="small")
-    
-    with col1:
-        submit_disabled = not question.strip() or not st.session_state.file_id
-        if st.button(
-            "🚀 Send",
-            type="primary",
-            disabled=submit_disabled,
-            use_container_width=True,
-            key="submit_btn"
-        ):
-            if question.strip() and st.session_state.file_id:
-                process_question(question, uploaded_image)
-    
-    with col2:
-        if st.button("🔄 Clear", use_container_width=True, help="Clear chat history"):
-            st.session_state.chat_history = []
-            st.rerun()
-    
-    with col3:
-        if st.button("📥 Export", use_container_width=True, help="Export chat"):
-            export_chat_history()
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Use chat_input for better UX - handles Enter key and clears automatically
+    if st.session_state.file_id:
+        question = st.chat_input("Ask anything about your document...", key="chat_input")
+        if question:
+            process_question(question)
+    else:
+        st.chat_input("Please upload a document first...", disabled=True, key="chat_input_disabled")
 
-def process_question(question: str, uploaded_image=None):
+def process_question(question: str):
     """
     Process a user question and get AI response.
+    Uses st.status for better loading UX without full page rerun.
     
     Args:
         question: User's question text
-        uploaded_image: Optional uploaded image file
     """
     timestamp = datetime.now().strftime("%H:%M")
     
@@ -1124,37 +1073,29 @@ def process_question(question: str, uploaded_image=None):
     }
     st.session_state.chat_history.append(user_message)
     
-    # Encode image if provided
-    image_base64 = None
-    if uploaded_image:
-        image_base64 = encode_image_to_base64(uploaded_image)
-    
-    # Get AI response
-    with st.spinner("🤔 Thinking..."):
-        result = query_document(question, image_base64)
-    
-    if result:
-        # Add assistant message to history
-        assistant_message = {
-            "role": "assistant",
-            "content": result["answer"],
-            "timestamp": datetime.now().strftime("%H:%M"),
-            "sources": result.get("sources", []),
-            "context": result.get("context", "")
-        }
-        st.session_state.chat_history.append(assistant_message)
+    # Use status container for better loading feedback
+    with st.status("Processing your question...", expanded=True) as status:
+        st.write("🔍 Searching document...")
+        result = query_document(question)
         
-        # Show context if enabled
-        if st.session_state.show_context and result.get("context"):
-            with st.expander("📄 Retrieved Context", expanded=False):
-                st.text_area(
-                    "Context",
-                    result["context"],
-                    height=200,
-                    disabled=True,
-                    label_visibility="collapsed"
-                )
+        if result:
+            st.write("✅ Found relevant context")
+            st.write("🤖 Generating response...")
+            
+            # Add assistant message to history
+            assistant_message = {
+                "role": "assistant",
+                "content": result["answer"],
+                "timestamp": datetime.now().strftime("%H:%M"),
+                "sources": result.get("sources", []),
+                "context": result.get("context", "")
+            }
+            st.session_state.chat_history.append(assistant_message)
+            status.update(label="✅ Response ready!", state="complete", expanded=False)
+        else:
+            status.update(label="❌ Failed to get response", state="error", expanded=False)
     
+    # Rerun to display the new messages in chat
     st.rerun()
 
 def export_chat_history():
@@ -1287,16 +1228,18 @@ def main():
         st.stop()
     
     # Render UI
-    render_header()
+    # render_header()
     render_sidebar()
     
     # Main content area
     if st.session_state.file_id:
         render_chat_interface()
+        # Only show footer if no messages yet
+        if not st.session_state.chat_history:
+            render_footer()
     else:
         render_welcome_screen()
-    
-    render_footer()
+        render_footer()
 
 # =============================================================================
 # Entry Point

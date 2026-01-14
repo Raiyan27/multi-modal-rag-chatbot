@@ -5,6 +5,7 @@ Enhanced with improved error handling, logging, caching, and performance optimiz
 """
 
 import os
+import io
 import sqlite3
 import base64
 import time
@@ -157,19 +158,106 @@ def process_csv(file_path: str, filename: str) -> List[Document]:
     return loader.load()
 
 
-def process_image(file_path: str, filename: str) -> List[Document]:
+def analyze_image_with_vision(file_path: str, filename: str) -> str:
     """
-    Process image file using OCR and return documents.
+    Analyze an image using GPT Vision when OCR cannot extract text.
     
     Args:
         file_path: Path to the image file
         filename: Original filename
         
     Returns:
-        List containing a single Document with OCR-extracted text
+        Text description of the image content from GPT Vision
+    """
+    logger.info(f"Analyzing image with GPT Vision: {filename}")
+    
+    try:
+        # Read and encode the image
+        with open(file_path, "rb") as image_file:
+            image_data = image_file.read()
+        
+        # Resize image if too large (max 2048px on longest side for efficiency)
+        image = Image.open(file_path)
+        max_size = 2048
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = tuple(int(dim * ratio) for dim in image.size)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Save resized image to buffer
+            buffer = io.BytesIO()
+            # Convert to RGB if necessary
+            if image.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                if image.mode == 'RGBA':
+                    background.paste(image, mask=image.split()[-1])
+                else:
+                    background.paste(image)
+                image = background
+            image.save(buffer, format="JPEG", quality=85)
+            image_data = buffer.getvalue()
+        
+        image_base64 = base64.b64encode(image_data).decode()
+        
+        client = get_openai_client()
+        
+        prompt = """Analyze this image and provide a detailed description of its content. 
+Include:
+1. What type of image this is (photo, diagram, chart, screenshot, etc.)
+2. Main subjects or objects in the image
+3. Any text visible in the image (even if OCR couldn't detect it)
+4. Key information, data, or concepts depicted
+5. Any important details that would help someone understand the image without seeing it
+
+Provide a comprehensive description that can be used for document retrieval and question answering."""
+
+        response = client.chat.completions.create(
+            model=settings.openai_vision_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=settings.openai_max_tokens,
+            temperature=0.1
+        )
+        
+        description = response.choices[0].message.content
+        logger.info(f"GPT Vision successfully analyzed image: {filename}")
+        
+        return f"[Image Analysis: {filename}]\n\n{description}"
+        
+    except Exception as e:
+        logger.error(f"Error analyzing image with GPT Vision: {str(e)}")
+        # Return a fallback message if Vision API fails
+        return f"[Image file: {filename}] - Unable to analyze image content. The image may contain graphics, diagrams, or visual content that could not be processed."
+
+
+def process_image(file_path: str, filename: str) -> List[Document]:
+    """
+    Process image file using OCR first, then fall back to GPT Vision if no text found.
+    
+    Args:
+        file_path: Path to the image file
+        filename: Original filename
+        
+    Returns:
+        List containing a single Document with extracted content
         
     Raises:
-        Exception: If OCR processing fails
+        Exception: If processing fails
     """
     logger.info(f"Processing image with OCR: {filename}")
     
@@ -191,17 +279,21 @@ def process_image(file_path: str, filename: str) -> List[Document]:
         text = pytesseract.image_to_string(image)
         
         if not text.strip():
-            text = f"[Image file: {filename}] - OCR could not extract any text content. The image may contain graphics, handwriting, or non-text content."
-            logger.warning(f"OCR found no text in image: {filename}")
+            # OCR found no text - use GPT Vision to analyze the image
+            logger.info(f"OCR found no text in image: {filename}. Falling back to GPT Vision.")
+            text = analyze_image_with_vision(file_path, filename)
+            vision_used = True
         else:
             logger.info(f"OCR extracted {len(text)} characters from image: {filename}")
+            vision_used = False
         
         doc = Document(
             page_content=text,
             metadata={
                 "source": filename,
                 "type": "image",
-                "ocr_processed": True
+                "ocr_processed": True,
+                "vision_analyzed": vision_used
             }
         )
         return [doc]
@@ -434,78 +526,6 @@ def delete_document_embeddings(file_id: str) -> bool:
 # Query Processing
 # =============================================================================
 
-def handle_multimodal_query(
-    question: str,
-    image_base64: str,
-    context_docs: List[Document],
-    temperature: float = 0.1
-) -> str:
-    """
-    Handle multimodal query using GPT-4 Vision.
-    
-    Args:
-        question: User's question
-        image_base64: Base64 encoded image
-        context_docs: Relevant context documents
-        temperature: Response generation temperature
-        
-    Returns:
-        Generated answer
-        
-    Raises:
-        Exception: If query processing fails
-    """
-    logger.info("Processing multimodal query with GPT-4 Vision")
-    
-    try:
-        client = get_openai_client()
-        
-        # Build context from documents
-        context = "\n\n---\n\n".join([doc.page_content for doc in context_docs])
-        
-        prompt = f"""You are an expert assistant analyzing documents and images. Answer the question based on the following context from the document and the provided image.
-
-Document Context:
-{context}
-
-Question: {question}
-
-Instructions:
-1. Analyze both the text context and the image carefully
-2. Provide a comprehensive answer that integrates information from both sources
-3. If the image contradicts or adds to the text, mention this
-4. Be specific and cite relevant parts when possible
-5. If you cannot answer from the provided context and image, say so clearly"""
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}",
-                            "detail": "high"
-                        }
-                    }
-                ]
-            }
-        ]
-        
-        response = client.chat.completions.create(
-            model=settings.openai_vision_model,
-            messages=messages,
-            max_tokens=settings.openai_max_tokens,
-            temperature=temperature
-        )
-        
-        return response.choices[0].message.content
-        
-    except Exception as e:
-        logger.error(f"Error in multimodal query: {str(e)}")
-        raise Exception(f"Error in multimodal query: {str(e)}")
-
 
 def handle_text_query(
     question: str,
@@ -562,7 +582,7 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
     Perform RAG query and return response.
     
     Args:
-        query_request: Query request object with question, file_id, and optional image
+        query_request: Query request object with question and file_id
         
     Returns:
         QueryResponse with answer, context, and sources
@@ -616,22 +636,13 @@ def perform_rag_query(query_request: QueryRequest) -> QueryResponse:
             )
             sources.append(source)
         
-        # Generate answer
-        if query_request.image_base64:
-            answer = handle_multimodal_query(
-                query_request.question,
-                query_request.image_base64,
-                docs,
-                temperature
-            )
-            model_used = "gpt-4o"
-        else:
-            answer = handle_text_query(
-                query_request.question,
-                context,
-                temperature
-            )
-            model_used = "gpt-4o-mini"
+        # Generate answer using text query (all documents are now text-based)
+        answer = handle_text_query(
+            query_request.question,
+            context,
+            temperature
+        )
+        model_used = settings.openai_mini_model
         
         processing_time_ms = int((time.time() - start_time) * 1000)
         logger.info(f"RAG query complete: {len(sources)} sources, {processing_time_ms}ms")

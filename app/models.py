@@ -42,10 +42,6 @@ class QueryRequest(BaseModel):
         min_length=1,
         description="UUID of the uploaded file to query"
     )
-    image_base64: Optional[str] = Field(
-        None, 
-        description="Base64 encoded image for multi-modal queries"
-    )
     max_sources: Optional[int] = Field(
         default=5,
         ge=1,
@@ -82,7 +78,6 @@ class QueryRequest(BaseModel):
             "example": {
                 "question": "What are the main topics discussed in this document?",
                 "file_id": "123e4567-e89b-12d3-a456-426614174000",
-                "image_base64": None,
                 "max_sources": 5,
                 "temperature": 0.1
             }
