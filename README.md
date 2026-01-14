@@ -35,8 +35,7 @@ Experience the full functionality:
 
 1. Upload a sample document (PDF, DOCX, image, etc.)
 2. Ask natural language questions about its content
-3. Optionally include images for visual context
-4. View sourced answers with document citations
+3. View sourced answers with document citations
 
 _Note: First request may take 30-60s due to cold start on free tier hosting._
 
@@ -60,16 +59,16 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
 - **PDFs**: Full text extraction with layout preservation
 - **Word Documents**: Native DOCX parsing
 - **Plain Text & CSV**: Structured and unstructured data handling
-- **Images (PNG/JPG/JPEG)**: OCR-powered text extraction via Tesseract
+- **Images (PNG/JPG/JPEG)**: Smart text extraction with Tesseract OCR → GPT-4o Vision fallback
 - **SQLite Databases**: Direct query and analysis of database files
 
 ### 💬 **Intelligent Query Interface**
 
 - **Natural Language Q&A**: Ask questions in plain English
-- **Multi-Modal Queries**: Combine text questions with image uploads for visual context
 - **Conversation Memory**: Maintains chat history per document session
 - **Source Attribution**: Every answer includes referenced document sections
-- **Real-Time Streaming**: Progressive answer generation (configurable)
+- **Context Display**: Optionally view the full retrieved context used for answers
+- **Chat Export**: Export conversation history to JSON
 
 ### 🎯 **Document Management**
 
@@ -178,7 +177,7 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
                └─> Text extraction
                    ├─> PDFs: PyMuPDF + pypdf
                    ├─> DOCX: docx2txt
-                   ├─> Images: Tesseract OCR
+                   ├─> Images: Tesseract OCR → GPT-4o Vision fallback
                    └─> CSV: pandas
 
 2. DOCUMENT PROCESSING
@@ -196,10 +195,9 @@ _Note: First request may take 30-60s due to cold start on free tier hosting._
                    └─> Construct prompt:
                        ├─> System instructions
                        ├─> Retrieved context
-                       ├─> User question
-                       └─> Optional image (base64)
+                       └─> User question
                            └─> LLM generates answer
-                               └─> Return with sources
+                               └─> Return with sources & context
 
 4. ANSWER DISPLAY
    └─> Streamlit renders:
@@ -369,14 +367,14 @@ multi-modal-rag-app/
 
 ### Endpoints
 
-| Method   | Endpoint                  | Description                 | Request Body                                              | Response                            |
-| -------- | ------------------------- | --------------------------- | --------------------------------------------------------- | ----------------------------------- |
-| `GET`    | `/`                       | Root welcome message        | -                                                         | JSON info                           |
-| `GET`    | `/api/v1/health`          | System health check         | -                                                         | Health status + vectorstore stats   |
-| `POST`   | `/api/v1/upload`          | Upload and process document | `multipart/form-data` (file)                              | `file_id`, `filename`, `message`    |
-| `POST`   | `/api/v1/query`           | Ask question about document | `{"question": str, "file_id": str, "image_base64"?: str}` | `{"answer": str, "sources": [...]}` |
-| `GET`    | `/api/v1/files`           | List all uploaded files     | -                                                         | Array of file objects               |
-| `DELETE` | `/api/v1/files/{file_id}` | Delete uploaded file        | -                                                         | Confirmation message                |
+| Method   | Endpoint                  | Description                 | Request Body                        | Response                                            |
+| -------- | ------------------------- | --------------------------- | ----------------------------------- | --------------------------------------------------- |
+| `GET`    | `/`                       | Root welcome message        | -                                   | JSON info                                           |
+| `GET`    | `/api/v1/health`          | System health check         | -                                   | Health status + vectorstore stats                   |
+| `POST`   | `/api/v1/upload`          | Upload and process document | `multipart/form-data` (file)        | `file_id`, `filename`, `message`                    |
+| `POST`   | `/api/v1/query`           | Ask question about document | `{"question": str, "file_id": str}` | `{"answer": str, "sources": [...], "context": str}` |
+| `GET`    | `/api/v1/files`           | List all uploaded files     | -                                   | Array of file objects                               |
+| `DELETE` | `/api/v1/files/{file_id}` | Delete uploaded file        | -                                   | Confirmation message                                |
 
 ### Example Usage
 
